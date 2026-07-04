@@ -1,0 +1,52 @@
+{
+  "appUrl": "http://127.0.0.1:5180/",
+  "videoPath": "/Users/ryu1872/Documents/해커톤_Deploy for Defense(D4D)/prototype/link16-cop-simulator/output/playwright/link16-cop-success-scenario-75pct-compact-40s-54s.mp4",
+  "posterPath": "/Users/ryu1872/Documents/해커톤_Deploy for Defense(D4D)/prototype/link16-cop-simulator/output/playwright/link16-cop-success-scenario-75pct-compact-40s-54s-poster.jpg",
+  "durationMs": 54000,
+  "fps": 8,
+  "width": 1366,
+  "height": 768,
+  "pageZoom": 0.75,
+  "browserViewport": {
+    "width": 1821,
+    "height": 1024
+  },
+  "fighterApprovalAfterMs": 40000,
+  "frameCount": 136,
+  "videoSize": 890595,
+  "posterSize": 164601,
+  "actions": [
+    {
+      "atSec": 0,
+      "name": "scenario-started"
+    },
+    {
+      "atSec": 22,
+      "name": "drone-intercept-approved"
+    },
+    {
+      "atSec": 40,
+      "name": "fighter-cap-approved"
+    }
+  ],
+  "finalState": {
+    "actions": [
+      {
+        "atSec": 0,
+        "name": "scenario-started"
+      },
+      {
+        "atSec": 22,
+        "name": "drone-intercept-approved"
+      },
+      {
+        "atSec": 40,
+        "name": "fighter-cap-approved"
+      }
+    ],
+    "started": true,
+    "droneApproved": true,
+    "fighterApproved": true,
+    "snippet": "CRITICAL\nDMZ 드론 침투 긴급상황\n삼팔선 인근 수도권 방공\nLIVE T+00:41 · 1x\n배속\n0.5x\n1x\n2x\n4x\n정지\n처음으로\n전체 콘솔\n\nCOP MAP\n\nDMZ 경계선 기반 합동 COP\n색상·아이콘 식별\nPHASE 04\nCOUNTER-AIR\nSEOUL\nINTERCEPT\nCOMPLETE\n\nCOMMANDER COP\n\n합동 작전상황판\n경보 · 브리핑 · 결심\n\nCRITICAL ALERT\n\nDMZ 드론 침투 긴급상황 · KPA-FTR-100 위협도 96%\n긴급 대응 추천이 생성되면 팝업에서 지휘관 결심이 필요합니다.\n\n"
+  }
+}
