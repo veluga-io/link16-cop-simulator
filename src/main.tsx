@@ -552,7 +552,7 @@ const fighterPostEngagementDurationSec = 18;
 
 const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
-const mapIconScaleForZoom = (zoom: number) => clampNumber(Math.pow(1.16, zoom - 8), 0.52, 1.18);
+const mapIconScaleForZoom = (zoom: number) => clampNumber(Math.pow(1.22, zoom - 8), 0.34, 1.24);
 
 const scaledMapIconSize = (baseSize: number, scale: number, minSize = 6) => Math.max(minSize, Math.round(baseSize * scale));
 
@@ -959,10 +959,11 @@ function CopMap({
       scaleSize(width, minWidth),
       scaleSize(height, minHeight),
     ];
+    const scaleRadius = (baseRadius: number, minRadius = 4) => Math.max(minRadius, Math.round(baseRadius * mapIconScale));
     const centerAnchor = ([width, height]: [number, number]): [number, number] => [width / 2, height / 2];
 
     dmzBoundaryLines.forEach((boundary) => {
-      const boundarySize = scalePair(42, 18, 28, 12);
+      const boundarySize = scalePair(42, 18, 18, 8);
       L.polyline(
         [
           [boundary.lat, 124.7],
@@ -997,7 +998,7 @@ function CopMap({
       fillColor: "#f8fafc",
     }).addTo(layer);
 
-    const commandPostSize = scaleSize(18, 10);
+    const commandPostSize = scaleSize(18, 7);
     L.marker([commandPost.lat, commandPost.lng], {
       icon: L.divIcon({
         className: "",
@@ -1021,7 +1022,7 @@ function CopMap({
       .bindTooltip("북측 목표: SEOUL", { className: "cop-tip cop-tip--compact", direction: "top" })
       .addTo(layer);
 
-    const seoulMarkerSize = scalePair(82, 28, 58, 20);
+    const seoulMarkerSize = scalePair(82, 28, 46, 16);
     L.marker([seoulTarget.lat, seoulTarget.lng], {
       icon: L.divIcon({
         className: "",
@@ -1055,7 +1056,7 @@ function CopMap({
         .bindTooltip(`SENSOR COVERAGE ${sensorCoverageKm}km`, { className: "cop-tip cop-tip--compact", direction: "top" })
         .addTo(layer);
 
-      const sensorSweepSize = scaleSize(260, 150);
+      const sensorSweepSize = scaleSize(260, 88);
       L.marker([sensorAsset.lat, sensorAsset.lng], {
         icon: L.divIcon({
           className: "",
@@ -1098,7 +1099,7 @@ function CopMap({
           .addTo(layer);
 
         L.circleMarker([reconTrack.lat, reconTrack.lng], {
-          radius: reconTrack.lat <= dmzOrangeResponseLat ? 22 : 16,
+          radius: scaleRadius(reconTrack.lat <= dmzOrangeResponseLat ? 22 : 16, 7),
           color: "#22d3ee",
           weight: 2,
           opacity: 0.92,
@@ -1113,7 +1114,7 @@ function CopMap({
           .addTo(layer);
       }
 
-      const contactPingSize = scaleSize(76, 42);
+      const contactPingSize = scaleSize(76, 26);
       L.marker([reconTrack.lat, reconTrack.lng], {
         icon: L.divIcon({
           className: "",
@@ -1142,7 +1143,7 @@ function CopMap({
           .bindTooltip("UAV RESPONSE VECTOR", { className: "cop-tip cop-tip--compact", direction: "top" })
           .addTo(layer);
 
-        const responseAuraSize = scaleSize(84, 48);
+        const responseAuraSize = scaleSize(84, 28);
         L.marker([attackDroneAsset.lat, attackDroneAsset.lng], {
           icon: L.divIcon({
             className: "",
@@ -1161,7 +1162,7 @@ function CopMap({
       const unit = assetUnitVisual(asset);
       const selected = asset.assetId === selectedAssetId || asset.assetId === manualEngagement.assetId;
       const launchReady = isAttackDroneAsset(asset) && manualEngagement.status === "idle";
-      const assetSize = scaleSize(selected ? mapIconSize.assetSelected : mapIconSize.asset, 18);
+      const assetSize = scaleSize(selected ? mapIconSize.assetSelected : mapIconSize.asset, 12);
       L.circle([asset.lat, asset.lng], {
         radius: asset.rangeKm * 1000,
         color,
@@ -1222,7 +1223,7 @@ function CopMap({
         const trajectorySpec = trajectorySpecs?.find((spec) => spec.entityId === track.entityId);
         fighterFormationPoints(track, trajectorySpec).forEach((point) => {
           const baseSize = selected ? mapIconSize.formationSelected : mapIconSize.formation;
-          const size = scaleSize(baseSize * (trajectorySpec?.formation?.iconScale ?? 1), 5);
+          const size = scaleSize(baseSize * (trajectorySpec?.formation?.iconScale ?? 1), 4);
           const marker = L.marker([point.lat, point.lng], {
             icon: L.divIcon({
               className: "",
@@ -1247,7 +1248,7 @@ function CopMap({
         return;
       }
 
-      const size = scaleSize(selected ? mapIconSize.trackSelected : mapIconSize.track, 18);
+      const size = scaleSize(selected ? mapIconSize.trackSelected : mapIconSize.track, 12);
       const marker = L.marker([track.lat, track.lng], {
         icon: L.divIcon({
           className: "",
@@ -1301,7 +1302,7 @@ function CopMap({
         .addTo(layer);
 
       if (fighterResponse.autoApprovedByRedLine) {
-        const autoApprovalSize = scalePair(146, 42, 104, 30);
+        const autoApprovalSize = scalePair(146, 42, 76, 22);
         L.marker([dmzRedWarLat, seoulTarget.lng], {
           icon: L.divIcon({
             className: "",
@@ -1314,7 +1315,7 @@ function CopMap({
         }).addTo(layer);
       }
 
-      const raidFrontSize = scaleSize(124, 70);
+      const raidFrontSize = scaleSize(124, 42);
       L.marker([raidAnchor.lat, raidAnchor.lng], {
         icon: L.divIcon({
           className: "",
@@ -1378,7 +1379,7 @@ function CopMap({
       snapshot.effects
         .filter((effect) => snapshot.timelineSec >= effect.startSec && snapshot.timelineSec < effect.startSec + effect.durationSec)
         .forEach((effect) => {
-          const effectSize = scaleSize(70, 36);
+          const effectSize = scaleSize(70, 24);
           L.marker([effect.lat, effect.lng], {
             icon: L.divIcon({
               className: "",
@@ -1391,7 +1392,7 @@ function CopMap({
           }).addTo(layer);
 
           L.circleMarker([effect.lat, effect.lng], {
-            radius: 20,
+            radius: scaleRadius(20, 7),
             color: "#38bdf8",
             weight: 2,
             opacity: 0.92,
@@ -1432,7 +1433,7 @@ function CopMap({
           .bindTooltip("BLUE-UAV COLLISION INTERCEPT", { className: "cop-tip cop-tip--compact", direction: "top" })
           .addTo(layer);
 
-        const interceptorSize = scaleSize(mapIconSize.interceptor, 16);
+        const interceptorSize = scaleSize(mapIconSize.interceptor, 11);
         L.marker([interceptLat, interceptLng], {
           icon: L.divIcon({
             className: "",
@@ -1445,7 +1446,7 @@ function CopMap({
         }).addTo(layer);
 
         if (interceptProgress >= 0.88) {
-          const uavImpactSize = scaleSize(70, 36);
+          const uavImpactSize = scaleSize(70, 24);
           L.marker([targetTrack.lat, targetTrack.lng], {
             icon: L.divIcon({
               className: "",
@@ -1458,7 +1459,7 @@ function CopMap({
           }).addTo(layer);
 
           L.circleMarker([targetTrack.lat, targetTrack.lng], {
-            radius: 18,
+            radius: scaleRadius(18, 7),
             color: "#38bdf8",
             weight: 2,
             fillColor: "#38bdf8",
