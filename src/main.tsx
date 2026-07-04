@@ -93,32 +93,34 @@ const effectLabel: Record<DefenseAsset["effect"], string> = {
   relay: "감시·통신 보강",
 };
 
+const dmzBlueWatchLat = 38.72;
+const dmzOrangeResponseLat = 38.34;
+const dmzRedWarLat = 38.0;
+
 const dmzBoundaryLines = [
   {
     id: "blue",
     label: "BLUE WATCH",
-    lat: 38.72,
+    lat: dmzBlueWatchLat,
     color: "#38bdf8",
     rule: "탐지·식별",
   },
   {
     id: "orange",
     label: "ORANGE RESPONSE",
-    lat: 38.34,
+    lat: dmzOrangeResponseLat,
     color: "#f59e0b",
     rule: "대응 출격 준비",
   },
   {
     id: "red",
     label: "RED WAR",
-    lat: 38.0,
+    lat: dmzRedWarLat,
     color: "#ef4444",
     rule: "월선 시 전시 전환",
   },
 ] as const;
 
-const dmzOrangeResponseLat = 38.34;
-const dmzRedWarLat = 38.0;
 const seoulTarget = {
   lat: 37.5665,
   lng: 126.978,
@@ -153,16 +155,16 @@ const dmzReconMissedAfterSec = 28;
 const dmzFighterResponseMissedAfterSec = 40;
 
 const mapIconSize = {
-  asset: 32,
-  assetSelected: 38,
-  track: 32,
-  trackSelected: 38,
-  formation: 12,
-  formationSelected: 14,
-  interceptor: 28,
-  fighterRaidRed: 9,
-  fighterRaidBlue: 11,
-  fighterRaidBlueSelected: 15,
+  asset: 24,
+  assetSelected: 30,
+  track: 24,
+  trackSelected: 30,
+  formation: 8,
+  formationSelected: 10,
+  interceptor: 22,
+  fighterRaidRed: 6,
+  fighterRaidBlue: 7,
+  fighterRaidBlueSelected: 10,
 } as const;
 
 const resourceToneLabel = (asset: DefenseAsset) => {
@@ -554,6 +556,8 @@ const clampNumber = (value: number, min: number, max: number) => Math.max(min, M
 
 const mapIconScaleForZoom = (zoom: number) => clampNumber(Math.pow(1.22, zoom - 8), 0.34, 1.24);
 
+const mapIconVisualScaleForZoom = (zoom: number) => clampNumber(Math.pow(1.2, zoom - 8), 0.42, 1.04);
+
 const scaledMapIconSize = (baseSize: number, scale: number, minSize = 6) => Math.max(minSize, Math.round(baseSize * scale));
 
 const fighterRaidSpawnSec = (track?: FusedTrack, trajectorySpecs?: TrajectorySpec[]) =>
@@ -575,8 +579,46 @@ const fighterRaidSnapshotAt = (
   return nearestFighterRaidSnapshot(stream, timelineSec);
 };
 
-const firstSnapshotRedBreach = (snapshot?: FighterRaidSnapshot) =>
-  snapshot?.entities.find((entity) => entity.side === "RED" && entity.lat <= dmzRedWarLat);
+const fighterRaidFirstAssignmentSec = (stream: FighterRaidStreamLite) =>
+  stream.snapshots.find((snapshot) => snapshot.assignments.length > 0)?.timelineSec ?? stream.snapshots[0]?.timelineSec ?? 0;
+
+const fighterRaidRenderTimeSec = (
+  stream: FighterRaidStreamLite,
+  simulationTimeSec: number,
+  spawnSec: number,
+  response: FighterResponseState,
+) => {
+  const firstSec = stream.snapshots[0]?.timelineSec ?? 0;
+  const lastSec = stream.snapshots.at(-1)?.timelineSec ?? firstSec;
+  const firstAssignmentSec = fighterRaidFirstAssignmentSec(stream);
+  if (response.acceptedAtSec === undefined) return simulationTimeSec;
+
+  const acceptedTimelineSec = response.acceptedAtSec - spawnSec;
+  if (acceptedTimelineSec >= firstAssignmentSec) return simulationTimeSec;
+
+  const elapsedSinceApprovalSec = Math.max(0, simulationTimeSec - response.acceptedAtSec);
+  return spawnSec + clampNumber(firstAssignmentSec + elapsedSinceApprovalSec, firstSec, lastSec);
+};
+
+const blueFighterEngagementPosition = (
+  entity: FighterRaidSnapshotEntity,
+  assignment: FighterRaidSnapshot["assignments"][number],
+  timelineSec: number,
+) => {
+  const startSec = assignment.startSec ?? timelineSec;
+  const resultSec = assignment.resultSec ?? startSec + 2;
+  const progress = smoothProgress(clampNumber((timelineSec - startSec) / Math.max(0.5, resultSec - startSec), 0, 1));
+
+  return {
+    lat: interpolateNumber(assignment.line.from.lat ?? entity.lat, assignment.line.to.lat, progress),
+    lng: interpolateNumber(assignment.line.from.lng ?? entity.lng, assignment.line.to.lng, progress),
+  };
+};
+
+const firstSnapshotRedCrossing = (snapshot: FighterRaidSnapshot | undefined, boundaryLat: number) =>
+  snapshot?.entities.find((entity) => entity.side === "RED" && entity.lat <= boundaryLat);
+
+const firstSnapshotRedBreach = (snapshot?: FighterRaidSnapshot) => firstSnapshotRedCrossing(snapshot, dmzRedWarLat);
 
 const snapshotEntityUnitLabel = (entity: FighterRaidSnapshotEntity) => `${entity.side}-${entity.platformType === "FIGHTER" ? "FTR" : entity.platformType}`;
 
@@ -716,27 +758,6 @@ function CrisisAlert({ alert }: { alert: CrisisAlertModel }) {
   );
 }
 
-function BoundaryRulesPanel() {
-  return (
-    <section className="boundary-rules" aria-label="DMZ boundary rules">
-      {dmzBoundaryLines.map((line) => (
-        <article
-          key={line.id}
-          className={`boundary-rule boundary-rule--${line.id}`}
-          style={{ "--boundary-color": line.color } as React.CSSProperties}
-          title={line.label}
-          aria-label={line.label}
-        >
-          <span className="boundary-rule__line">
-            <i />
-          </span>
-          <span className="boundary-rule__signal" />
-        </article>
-      ))}
-    </section>
-  );
-}
-
 function ForceInventoryPanel({ inventory }: { inventory?: SimulationPreset["forceInventory"] }) {
   if (!inventory?.length) return null;
 
@@ -760,28 +781,6 @@ function ForceInventoryPanel({ inventory }: { inventory?: SimulationPreset["forc
           </div>
         </article>
       ))}
-    </section>
-  );
-}
-
-function ManualInterceptPanel({
-  state,
-}: {
-  state: ManualInterceptState;
-}) {
-  const statusCode = state.status === "resolved" ? "DONE" : state.status === "missed" ? "MISSED" : state.status === "armed" ? "ARMED" : "READY";
-
-  return (
-    <section className={clsx("manual-intercept", `manual-intercept--${state.status}`)} aria-label="auto drone intercept state" title="BLUE-UAV -> RED-UAV">
-      <header>
-        <span>Auto Intercept</span>
-        <strong>{statusCode}</strong>
-      </header>
-      <div className="manual-intercept__route" aria-hidden="true">
-        <UnitBadge unit={blueUavUnit} />
-        <i />
-        <UnitBadge unit={redUavUnit} />
-      </div>
     </section>
   );
 }
@@ -922,9 +921,17 @@ function CopMap({
     }).setView([commandPost.lat, commandPost.lng], 8);
     mapRef.current = map;
 
-    const handleZoom = () => setMapZoom(map.getZoom());
-    map.on("zoomend", handleZoom);
-    setMapZoom(map.getZoom());
+    const updateVisualZoomScale = () => {
+      nodeRef.current?.style.setProperty("--cop-map-icon-scale", mapIconVisualScaleForZoom(map.getZoom()).toFixed(3));
+    };
+    const commitZoomScale = () => {
+      updateVisualZoomScale();
+      setMapZoom(map.getZoom());
+    };
+    map.on("zoom", updateVisualZoomScale);
+    map.on("zoomend", commitZoomScale);
+    map.on("viewreset", commitZoomScale);
+    commitZoomScale();
 
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
       maxZoom: 18,
@@ -936,7 +943,9 @@ function CopMap({
     setTimeout(() => mapRef.current?.invalidateSize(), 120);
 
     return () => {
-      map.off("zoomend", handleZoom);
+      map.off("zoom", updateVisualZoomScale);
+      map.off("zoomend", commitZoomScale);
+      map.off("viewreset", commitZoomScale);
       map.remove();
       mapRef.current = null;
       layerRef.current = null;
@@ -963,7 +972,7 @@ function CopMap({
     const centerAnchor = ([width, height]: [number, number]): [number, number] => [width / 2, height / 2];
 
     dmzBoundaryLines.forEach((boundary) => {
-      const boundarySize = scalePair(42, 18, 18, 8);
+      const boundarySize = scalePair(34, 14, 14, 6);
       L.polyline(
         [
           [boundary.lat, 124.7],
@@ -972,7 +981,7 @@ function CopMap({
         {
           color: boundary.color,
           weight: boundary.id === "red" ? 4 : 3,
-          opacity: 0.9,
+          opacity: boundary.id === "red" ? 0.62 : boundary.id === "orange" ? 0.46 : 0.34,
           dashArray: boundary.id === "red" ? "12,8" : "8,10",
         },
       )
@@ -994,11 +1003,12 @@ function CopMap({
       radius: 2500,
       color: "#f8fafc",
       weight: 2,
-      fillOpacity: 0.08,
+      opacity: 0.34,
+      fillOpacity: 0.035,
       fillColor: "#f8fafc",
     }).addTo(layer);
 
-    const commandPostSize = scaleSize(18, 7);
+    const commandPostSize = scaleSize(14, 6);
     L.marker([commandPost.lat, commandPost.lng], {
       icon: L.divIcon({
         className: "",
@@ -1015,14 +1025,15 @@ function CopMap({
       color: "#ef4444",
       weight: 2,
       dashArray: "6,8",
+      opacity: 0.46,
       fillColor: "#ef4444",
-      fillOpacity: 0.08,
+      fillOpacity: 0.035,
       className: "seoul-target-ring",
     })
       .bindTooltip("북측 목표: SEOUL", { className: "cop-tip cop-tip--compact", direction: "top" })
       .addTo(layer);
 
-    const seoulMarkerSize = scalePair(82, 28, 46, 16);
+    const seoulMarkerSize = scalePair(64, 22, 38, 14);
     L.marker([seoulTarget.lat, seoulTarget.lng], {
       icon: L.divIcon({
         className: "",
@@ -1047,16 +1058,16 @@ function CopMap({
         radius: sensorCoverageKm * 1000,
         color: "#22d3ee",
         weight: 2,
-        opacity: reconTrack ? 0.58 : 0.34,
+        opacity: reconTrack ? 0.34 : 0.18,
         fillColor: "#22d3ee",
-        fillOpacity: reconTrack ? 0.055 : 0.028,
+        fillOpacity: reconTrack ? 0.026 : 0.012,
         dashArray: "14,10",
         className: "sensor-coverage-ring",
       })
         .bindTooltip(`SENSOR COVERAGE ${sensorCoverageKm}km`, { className: "cop-tip cop-tip--compact", direction: "top" })
         .addTo(layer);
 
-      const sensorSweepSize = scaleSize(260, 88);
+      const sensorSweepSize = scaleSize(210, 72);
       L.marker([sensorAsset.lat, sensorAsset.lng], {
         icon: L.divIcon({
           className: "",
@@ -1075,7 +1086,7 @@ function CopMap({
         L.polyline(trailPoints, {
           color: "#ef4444",
           weight: 3,
-          opacity: 0.72,
+          opacity: 0.54,
           dashArray: "2,8",
           className: "cinematic-trail cinematic-trail--hostile",
         }).addTo(layer);
@@ -1090,7 +1101,7 @@ function CopMap({
           {
             color: "#22d3ee",
             weight: 2,
-            opacity: 0.86,
+            opacity: 0.44,
             dashArray: "5,8",
             className: "cinematic-link cinematic-link--sensor",
           },
@@ -1099,12 +1110,12 @@ function CopMap({
           .addTo(layer);
 
         L.circleMarker([reconTrack.lat, reconTrack.lng], {
-          radius: scaleRadius(reconTrack.lat <= dmzOrangeResponseLat ? 22 : 16, 7),
+          radius: scaleRadius(reconTrack.lat <= dmzOrangeResponseLat ? 17 : 12, 5),
           color: "#22d3ee",
           weight: 2,
-          opacity: 0.92,
+          opacity: 0.56,
           fillColor: "#22d3ee",
-          fillOpacity: 0.12,
+          fillOpacity: 0.06,
           className: "sensor-capture-ring",
         })
           .bindTooltip(`SENSOR HIT | ${reconBoundaryStatus}`, {
@@ -1114,7 +1125,7 @@ function CopMap({
           .addTo(layer);
       }
 
-      const contactPingSize = scaleSize(76, 26);
+      const contactPingSize = scaleSize(56, 20);
       L.marker([reconTrack.lat, reconTrack.lng], {
         icon: L.divIcon({
           className: "",
@@ -1135,7 +1146,7 @@ function CopMap({
           {
             color: "#f59e0b",
             weight: manualEngagement.status === "armed" ? 4 : 2,
-            opacity: manualEngagement.status === "armed" ? 0.94 : 0.54,
+            opacity: manualEngagement.status === "armed" ? 0.64 : 0.3,
             dashArray: manualEngagement.status === "armed" ? "10,5" : "3,9",
             className: "cinematic-link cinematic-link--response",
           },
@@ -1143,7 +1154,7 @@ function CopMap({
           .bindTooltip("UAV RESPONSE VECTOR", { className: "cop-tip cop-tip--compact", direction: "top" })
           .addTo(layer);
 
-        const responseAuraSize = scaleSize(84, 28);
+        const responseAuraSize = scaleSize(62, 22);
         L.marker([attackDroneAsset.lat, attackDroneAsset.lng], {
           icon: L.divIcon({
             className: "",
@@ -1162,13 +1173,14 @@ function CopMap({
       const unit = assetUnitVisual(asset);
       const selected = asset.assetId === selectedAssetId || asset.assetId === manualEngagement.assetId;
       const launchReady = isAttackDroneAsset(asset) && manualEngagement.status === "idle";
-      const assetSize = scaleSize(selected ? mapIconSize.assetSelected : mapIconSize.asset, 12);
+      const assetSize = scaleSize(selected ? mapIconSize.assetSelected : mapIconSize.asset, 9);
       L.circle([asset.lat, asset.lng], {
         radius: asset.rangeKm * 1000,
         color,
         weight: 1,
         dashArray: "4,8",
-        fillOpacity: 0.025,
+        opacity: 0.24,
+        fillOpacity: 0.012,
         fillColor: color,
       }).addTo(layer);
 
@@ -1208,7 +1220,7 @@ function CopMap({
           {
             color,
             weight: selected ? 2 : 1,
-            opacity: selected ? 0.72 : 0.22,
+            opacity: selected ? 0.46 : 0.12,
             dashArray: selected ? "6,5" : "3,7",
           },
         ).addTo(layer);
@@ -1248,7 +1260,7 @@ function CopMap({
         return;
       }
 
-      const size = scaleSize(selected ? mapIconSize.trackSelected : mapIconSize.track, 12);
+      const size = scaleSize(selected ? mapIconSize.trackSelected : mapIconSize.track, 9);
       const marker = L.marker([track.lat, track.lng], {
         icon: L.divIcon({
           className: "",
@@ -1271,12 +1283,30 @@ function CopMap({
     });
 
     if (fighterRaidStream && fighterRaidTrack) {
-      const snapshot = fighterRaidSnapshotAt(fighterRaidStream, simulationTimeSec, fighterRaidSpawnAtSec);
+      const fighterRaidRenderTime = fighterRaidRenderTimeSec(fighterRaidStream, simulationTimeSec, fighterRaidSpawnAtSec, fighterResponse);
+      const fighterRaidTimelineSec = clampNumber(
+        fighterRaidRenderTime - fighterRaidSpawnAtSec,
+        fighterRaidStream.snapshots[0]?.timelineSec ?? 0,
+        fighterRaidStream.snapshots.at(-1)?.timelineSec ?? 0,
+      );
+      const snapshot = fighterRaidSnapshotAt(fighterRaidStream, fighterRaidRenderTime, fighterRaidSpawnAtSec);
       const snapshotEntities = snapshot.entities;
       const redEntities = snapshotEntities.filter((entity) => entity.side === "RED");
       const blueEntities = snapshotEntities.filter((entity) => entity.side === "BLUE");
-      const assignmentByBlue = new Map(snapshot.assignments.map((assignment) => [assignment.blueEntityId, assignment]));
-      const assignmentByRed = new Map(snapshot.assignments.map((assignment) => [assignment.redEntityId, assignment]));
+      const fighterRaidAttackConfirmed = Boolean(firstSnapshotRedCrossing(snapshot, dmzBlueWatchLat));
+      const fighterEngagementActive = fighterResponse.acceptedAtSec !== undefined;
+      const activeAssignments = fighterEngagementActive ? snapshot.assignments : [];
+      const activeEffects = fighterEngagementActive ? snapshot.effects : [];
+      const assignmentByBlue = new Map(activeAssignments.map((assignment) => [assignment.blueEntityId, assignment]));
+      const assignmentByRed = new Map(activeAssignments.map((assignment) => [assignment.redEntityId, assignment]));
+      const blueEngagementPositionById = new Map(
+        activeAssignments
+          .map((assignment) => {
+            const blueEntity = blueEntities.find((entity) => entity.entityId === assignment.blueEntityId);
+            return blueEntity ? [assignment.blueEntityId, blueFighterEngagementPosition(blueEntity, assignment, fighterRaidTimelineSec)] as const : undefined;
+          })
+          .filter((item): item is readonly [string, { lat: number; lng: number }] => Boolean(item)),
+      );
       const raidAnchor =
         redEntities.length > 0
           ? {
@@ -1293,7 +1323,7 @@ function CopMap({
         {
           color: "#ef4444",
           weight: fighterResponse.autoApprovedByRedLine ? 2.6 : 1.6,
-          opacity: fighterResponse.autoApprovedByRedLine ? 0.88 : 0.38,
+          opacity: fighterResponse.autoApprovedByRedLine ? 0.62 : 0.18,
           dashArray: fighterResponse.autoApprovedByRedLine ? "4,7" : "10,10",
           className: "seoul-target-line",
         },
@@ -1302,7 +1332,7 @@ function CopMap({
         .addTo(layer);
 
       if (fighterResponse.autoApprovedByRedLine) {
-        const autoApprovalSize = scalePair(146, 42, 76, 22);
+        const autoApprovalSize = scalePair(118, 34, 64, 20);
         L.marker([dmzRedWarLat, seoulTarget.lng], {
           icon: L.divIcon({
             className: "",
@@ -1315,7 +1345,7 @@ function CopMap({
         }).addTo(layer);
       }
 
-      const raidFrontSize = scaleSize(124, 42);
+      const raidFrontSize = scaleSize(86, 30);
       L.marker([raidAnchor.lat, raidAnchor.lng], {
         icon: L.divIcon({
           className: "",
@@ -1327,16 +1357,17 @@ function CopMap({
         zIndexOffset: 880,
       }).addTo(layer);
 
-      snapshot.assignments.forEach((assignment) => {
+      activeAssignments.forEach((assignment) => {
+        const from = blueEngagementPositionById.get(assignment.blueEntityId) ?? assignment.line.from;
         L.polyline(
           [
-            [assignment.line.from.lat, assignment.line.from.lng],
+            [from.lat, from.lng],
             [assignment.line.to.lat, assignment.line.to.lng],
           ],
           {
             color: "#38bdf8",
             weight: 2.2,
-            opacity: 0.82,
+            opacity: 0.5,
             dashArray: "2,7",
             className: "fighter-attack-line",
           },
@@ -1352,12 +1383,22 @@ function CopMap({
         const isRed = entity.side === "RED";
         const assignment = isRed ? assignmentByRed.get(entity.entityId) : assignmentByBlue.get(entity.entityId);
         const selected = !isRed && (fighterResponse.selectedFighterId === entity.entityId || Boolean(assignment));
-        const responseReady = !isRed && !fighterResponse.selectedFighterId && fighterResponse.acceptedAtSec === undefined && !fighterResponse.missedAtSec;
-        const size = scaleSize(isRed ? mapIconSize.fighterRaidRed : selected ? mapIconSize.fighterRaidBlueSelected : mapIconSize.fighterRaidBlue, isRed ? 5 : 6);
-        const marker = L.marker([entity.lat, entity.lng], {
+        const responseMissed = entity.status === "OUT_OF_MISSILES" || entity.status === "REPAIR_REQUIRED";
+        const standby = !isRed && !fighterRaidAttackConfirmed && !selected && !responseMissed;
+        const responseReady =
+          !isRed &&
+          fighterRaidAttackConfirmed &&
+          !fighterResponse.selectedFighterId &&
+          fighterResponse.acceptedAtSec === undefined &&
+          !fighterResponse.missedAtSec;
+        const size = scaleSize(isRed ? mapIconSize.fighterRaidRed : selected ? mapIconSize.fighterRaidBlueSelected : mapIconSize.fighterRaidBlue, isRed ? 3 : 4);
+        const engagementPosition = !isRed && assignment ? blueEngagementPositionById.get(entity.entityId) : undefined;
+        const markerLat = engagementPosition?.lat ?? entity.lat;
+        const markerLng = engagementPosition?.lng ?? entity.lng;
+        const marker = L.marker([markerLat, markerLng], {
           icon: L.divIcon({
             className: "",
-            html: `<button class="unit-marker unit-marker--track unit-marker--formation unit-marker--fighter-raid-${isRed ? "red" : "blue"} unit-marker--${isRed ? "red" : "blue"} unit-marker--fighter ${assignment ? "unit-marker--targeted unit-marker--attacking" : ""} ${selected ? "unit-marker--response-selected" : ""} ${responseReady ? "unit-marker--response-ready" : ""} ${entity.status === "OUT_OF_MISSILES" || entity.status === "REPAIR_REQUIRED" ? "unit-marker--response-missed" : ""}" style="--unit-color:${isRed ? "#ef4444" : "#38bdf8"};width:${size}px;height:${size}px" title="${entity.entityId}"><i></i></button>`,
+            html: `<button class="unit-marker unit-marker--track unit-marker--formation unit-marker--fighter-raid-${isRed ? "red" : "blue"} unit-marker--${isRed ? "red" : "blue"} unit-marker--fighter ${assignment ? "unit-marker--targeted unit-marker--attacking" : ""} ${selected ? "unit-marker--response-selected" : ""} ${standby ? "unit-marker--standby" : ""} ${responseReady ? "unit-marker--response-ready" : ""} ${responseMissed ? "unit-marker--response-missed" : ""}" style="--unit-color:${isRed ? "#ef4444" : "#38bdf8"};width:${size}px;height:${size}px" title="${entity.entityId}"><i></i></button>`,
             iconSize: [size, size],
             iconAnchor: [size / 2, size / 2],
           }),
@@ -1376,10 +1417,10 @@ function CopMap({
           .addTo(layer);
       });
 
-      snapshot.effects
+      activeEffects
         .filter((effect) => snapshot.timelineSec >= effect.startSec && snapshot.timelineSec < effect.startSec + effect.durationSec)
         .forEach((effect) => {
-          const effectSize = scaleSize(70, 24);
+          const effectSize = scaleSize(50, 18);
           L.marker([effect.lat, effect.lng], {
             icon: L.divIcon({
               className: "",
@@ -1392,12 +1433,12 @@ function CopMap({
           }).addTo(layer);
 
           L.circleMarker([effect.lat, effect.lng], {
-            radius: scaleRadius(20, 7),
+            radius: scaleRadius(14, 5),
             color: "#38bdf8",
             weight: 2,
-            opacity: 0.92,
+            opacity: 0.68,
             fillColor: "#ef4444",
-            fillOpacity: 0.16,
+            fillOpacity: 0.08,
             className: "fighter-impact-ring",
           })
             .bindTooltip(`${effect.type} | ${effect.targetEntityId ?? "RED-FTR"} | ${effect.durationSec}s`, {
@@ -1425,7 +1466,7 @@ function CopMap({
           {
             color: "#38bdf8",
             weight: 4,
-            opacity: 0.92,
+            opacity: 0.64,
             dashArray: "10,6",
             className: "uav-collision-line",
           },
@@ -1433,7 +1474,7 @@ function CopMap({
           .bindTooltip("BLUE-UAV COLLISION INTERCEPT", { className: "cop-tip cop-tip--compact", direction: "top" })
           .addTo(layer);
 
-        const interceptorSize = scaleSize(mapIconSize.interceptor, 11);
+        const interceptorSize = scaleSize(mapIconSize.interceptor, 8);
         L.marker([interceptLat, interceptLng], {
           icon: L.divIcon({
             className: "",
@@ -1446,7 +1487,7 @@ function CopMap({
         }).addTo(layer);
 
         if (interceptProgress >= 0.88) {
-          const uavImpactSize = scaleSize(70, 24);
+          const uavImpactSize = scaleSize(50, 18);
           L.marker([targetTrack.lat, targetTrack.lng], {
             icon: L.divIcon({
               className: "",
@@ -1459,11 +1500,12 @@ function CopMap({
           }).addTo(layer);
 
           L.circleMarker([targetTrack.lat, targetTrack.lng], {
-            radius: scaleRadius(18, 7),
+            radius: scaleRadius(13, 5),
             color: "#38bdf8",
             weight: 2,
+            opacity: 0.66,
             fillColor: "#38bdf8",
-            fillOpacity: 0.12,
+            fillOpacity: 0.06,
             className: "uav-impact-ring",
           }).addTo(layer);
         }
@@ -1623,6 +1665,7 @@ function TacticalAdvicePopup({
   const popupReasons = [recommendation.reasons[0], recommendation.reasons[3] ?? recommendation.reasons[2]].filter(Boolean);
   const threatUnit = advisoryThreatVisual(recommendation);
   const resourceUnit = advisoryResourceVisual(recommendation);
+  const isFighterRaidRecommendation = recommendation.threatClassId === "RED_FIGHTER_RAID";
 
   return (
     <motion.aside
@@ -1648,7 +1691,9 @@ function TacticalAdvicePopup({
         </div>
       </div>
       <p className="tactical-advice-popup__summary">
-        임계 상황이 감지되어 {recommendation.assetName} 기반 {effectLabel[recommendation.effect]} 후보안을 지휘관에게 올립니다.
+        {isFighterRaidRecommendation
+          ? `RED WAR 월선 전 ${recommendation.assetName} 기반 ${effectLabel[recommendation.effect]} 전술을 사용할지 지휘관 결심이 필요합니다.`
+          : `임계 상황이 감지되어 ${recommendation.assetName} 기반 ${effectLabel[recommendation.effect]} 후보안을 지휘관에게 올립니다.`}
       </p>
       <dl className="tactical-advice-popup__facts">
         <div>
@@ -1893,11 +1938,22 @@ function App() {
     fighterRaidDecisionTrack && model.simulation.fighterRaidStream
       ? fighterRaidSnapshotAt(model.simulation.fighterRaidStream, displayTimeSec, fighterRaidVisualSpawnSec)
       : undefined;
+  const fighterRaidBlueLineBreachEntity =
+    isDmzEscalation && fighterRaidDecisionTrack && model.simulation.fighterRaidStream
+      ? firstSnapshotRedCrossing(fighterRaidDecisionSnapshot, dmzBlueWatchLat)
+      : undefined;
   const fighterRaidRedLineBreachEntity =
     isDmzEscalation && fighterRaidDecisionTrack && model.simulation.fighterRaidStream
       ? firstSnapshotRedBreach(fighterRaidDecisionSnapshot)
       : undefined;
+  const fighterRaidBlueLineBreached = Boolean(fighterRaidBlueLineBreachEntity);
   const fighterRaidRedLineBreached = Boolean(fighterRaidRedLineBreachEntity);
+  const fighterRaidNeedsCommanderDecision =
+    fighterRaidBlueLineBreached &&
+    !fighterRaidRedLineBreached &&
+    !fighterResponse.autoApprovedByRedLine &&
+    fighterResponse.acceptedAtSec === undefined &&
+    !fighterResponse.missedAtSec;
   useEffect(() => {
     if (!isDmzEscalation) return;
     if (manualIntercept.status === "resolved" || manualIntercept.status === "missed") return;
@@ -1924,11 +1980,12 @@ function App() {
     const track = model.tracks.find((item) => item.trackId === recommendation.trackId);
     const trackThreatScore = track?.threatScore ?? 0;
     if (isDmzEscalation) {
-      return (
-        (manualIntercept.status === "resolved" || manualIntercept.status === "missed") &&
-        (fighterRaidRedLineBreached || fighterResponse.autoApprovedByRedLine) &&
-        (track?.threatClassId === "RED_FIGHTER_RAID" || recommendation.threatClassId === "RED_FIGHTER_RAID" || (track?.representedCount ?? 0) >= 100)
-      );
+      const isFighterRaidRecommendation =
+        track?.threatClassId === "RED_FIGHTER_RAID" ||
+        recommendation.threatClassId === "RED_FIGHTER_RAID" ||
+        (track?.representedCount ?? 0) >= 100;
+
+      return (manualIntercept.status === "resolved" || manualIntercept.status === "missed") && fighterRaidNeedsCommanderDecision && isFighterRaidRecommendation;
     }
     return (
       model.simulation.severity === "war" ||
@@ -2235,9 +2292,7 @@ function App() {
             <MetricCard label="Urgent rec" value={urgentRecommendationCount} icon={Brain} tone={urgentRecommendationCount > 0 ? "bad" : "good"} />
             <MetricCard label="Constraint" value={constraintStatus} icon={ShieldCheck} tone={constraintViolationCount === 0 ? "good" : "bad"} />
           </section>
-          <BoundaryRulesPanel />
           <ForceInventoryPanel inventory={model.simulation.forceInventory} />
-          <ManualInterceptPanel state={manualIntercept} />
         </div>
 
         <TacticalAdvicePopup recommendation={urgentPendingAdvice} onDecision={handleAdviceDecision} />
