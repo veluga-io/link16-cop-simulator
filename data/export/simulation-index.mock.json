@@ -1,0 +1,130 @@
+{
+  "metadata": {
+    "schemaVersion": "link16-cop-simulation.v2",
+    "safetyBoundary": "SIMULATED_ONLY",
+    "catalogVersion": "airshield-public-military-catalog/v1",
+    "orchestratorSchemaVersion": "airshield-orchestrator-tree/v1",
+    "note": "Synthetic advisory data only. No real Link-16, real military location, real inventory, real readiness, real ROE, or weapon-control command."
+  },
+  "defaultSimulationId": "dmz-drone-escalation",
+  "presets": [
+    {
+      "id": "dmz-drone-escalation",
+      "title": "DMZ 드론 침투 긴급상황",
+      "shortTitle": "DMZ 긴급",
+      "severity": "war",
+      "regionLabel": "삼팔선 인근 수도권 방공",
+      "messageCount": 16,
+      "assetCount": 4,
+      "entityCount": 6,
+      "trajectoryCount": 3,
+      "decisionRecordCount": 2,
+      "eventLogCount": 16,
+      "threatClasses": [
+        "RED_UAV_SWARM",
+        "RED_FIGHTER_RAID"
+      ],
+      "highlights": [
+        "파란 감시선 탐지",
+        "드론 미대응 분기",
+        "전투기 100대 출격",
+        "BLUE-FTR 미대응 분기"
+      ]
+    },
+    {
+      "id": "basic-training",
+      "title": "기초 감시 절차",
+      "shortTitle": "기초",
+      "severity": "basic",
+      "regionLabel": "동해 감시 공역",
+      "messageCount": 8,
+      "assetCount": 4,
+      "entityCount": 4,
+      "trajectoryCount": 1,
+      "decisionRecordCount": 1,
+      "eventLogCount": 8,
+      "threatClasses": [
+        "UNKNOWN_AIR_TRACK"
+      ],
+      "highlights": [
+        "단순 PPLI",
+        "중복 트랙 병합",
+        "낮은 메시지 손실",
+        "비살상 추적 권고"
+      ]
+    },
+    {
+      "id": "east-sea-normal",
+      "title": "동해 해상 접근 감시",
+      "shortTitle": "표준",
+      "severity": "normal",
+      "regionLabel": "동해 해상 접근로",
+      "messageCount": 12,
+      "assetCount": 4,
+      "entityCount": 8,
+      "trajectoryCount": 2,
+      "decisionRecordCount": 1,
+      "eventLogCount": 12,
+      "threatClasses": [
+        "UNKNOWN_AIR_TRACK",
+        "RED_EW_RADAR",
+        "RED_ATTACK_AIRCRAFT"
+      ],
+      "highlights": [
+        "동해 접근 항적",
+        "메시지 손실 25%",
+        "HOST-331",
+        "ROE 승인"
+      ]
+    },
+    {
+      "id": "west-sea-ew-crisis",
+      "title": "서해 NLL 전자전 압박",
+      "shortTitle": "위기",
+      "severity": "crisis",
+      "regionLabel": "서해 NLL 인근",
+      "messageCount": 10,
+      "assetCount": 4,
+      "entityCount": 7,
+      "trajectoryCount": 2,
+      "decisionRecordCount": 1,
+      "eventLogCount": 10,
+      "threatClasses": [
+        "RED_CRUISE_MISSILE",
+        "RED_EW_RADAR"
+      ],
+      "highlights": [
+        "RF 억제",
+        "메시지 손실 38%",
+        "기만 스크린",
+        "자산 readiness 저하"
+      ]
+    },
+    {
+      "id": "joint-war-emergency",
+      "title": "합동 방공 긴급상황",
+      "shortTitle": "긴급",
+      "severity": "war",
+      "regionLabel": "수도권 합동 방공",
+      "messageCount": 16,
+      "assetCount": 4,
+      "entityCount": 10,
+      "trajectoryCount": 5,
+      "decisionRecordCount": 3,
+      "eventLogCount": 16,
+      "threatClasses": [
+        "RED_BALLISTIC_MISSILE",
+        "RED_EW_RADAR",
+        "RED_CRUISE_MISSILE",
+        "RED_FIGHTER_RAID",
+        "RED_UAV_SWARM"
+      ],
+      "highlights": [
+        "다중 적성 항적",
+        "링크 손실 44%",
+        "탄약 제약",
+        "긴급 ROE 승인"
+      ]
+    }
+  ]
+}

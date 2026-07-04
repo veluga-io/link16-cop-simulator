@@ -1,0 +1,51 @@
+{
+  "metadata": {
+    "schemaVersion": "link16-cop-simulation.v2",
+    "safetyBoundary": "SIMULATED_ONLY",
+    "catalogVersion": "airshield-public-military-catalog/v1",
+    "orchestratorSchemaVersion": "airshield-orchestrator-tree/v1",
+    "note": "Synthetic advisory data only. No real Link-16, real military location, real inventory, real readiness, real ROE, or weapon-control command."
+  },
+  "osintSources": [
+    {
+      "sourceId": "osint-natural-earth",
+      "sourceName": "Natural Earth",
+      "url": "https://www.naturalearthdata.com/",
+      "retrievedAt": "2026-07-04",
+      "confidence": 92,
+      "usageNote": "해안선과 지역 맥락 출처"
+    },
+    {
+      "sourceId": "osint-ourairports",
+      "sourceName": "OurAirports",
+      "url": "https://ourairports.com/data/",
+      "retrievedAt": "2026-07-04",
+      "confidence": 88,
+      "usageNote": "공항/활주로와 민간 항공 맥락 출처"
+    },
+    {
+      "sourceId": "osint-osm-carto",
+      "sourceName": "OpenStreetMap / CARTO",
+      "url": "https://www.openstreetmap.org/",
+      "retrievedAt": "2026-07-04",
+      "confidence": 86,
+      "usageNote": "지도 타일과 지형 맥락 출처"
+    },
+    {
+      "sourceId": "osint-adsb-schema",
+      "sourceName": "Public ADS-B message pattern",
+      "url": "https://opensky-network.org/",
+      "retrievedAt": "2026-07-04",
+      "confidence": 74,
+      "usageNote": "항적 메시지 구조 참고"
+    },
+    {
+      "sourceId": "synthetic-rf-node",
+      "sourceName": "Synthetic RF node",
+      "url": "local://synthetic-rf-node",
+      "retrievedAt": "2026-07-04",
+      "confidence": 68,
+      "usageNote": "재밍과 링크 저하 시나리오 입력"
+    }
+  ]
+}
