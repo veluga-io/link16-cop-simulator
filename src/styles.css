@@ -1147,6 +1147,14 @@ button.unit-marker {
   opacity: 0.54;
 }
 
+.unit-marker--asset-drone {
+  border-radius: 999px;
+  opacity: 0.72;
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.12),
+    0 0 8px rgba(56, 189, 248, 0.22);
+}
+
 .unit-badge {
   flex: 0 0 auto;
   width: 28px;
@@ -1264,8 +1272,10 @@ button.unit-marker {
 
 .unit-marker--uav i,
 .unit-badge--uav i {
-  width: 62%;
-  height: 62%;
+  width: 56%;
+  height: 32%;
+  border: 2px solid currentColor;
+  border-radius: 999px;
 }
 
 .unit-marker--uav i::before,
@@ -1274,16 +1284,28 @@ button.unit-marker {
 .unit-badge--uav i::after {
   left: 50%;
   top: 50%;
-  width: 100%;
-  height: 3px;
-  border-radius: 999px;
   background: currentColor;
-  transform: translate(-50%, -50%) rotate(45deg);
+  transform: translate(-50%, -50%);
+}
+
+.unit-marker--uav i::before,
+.unit-badge--uav i::before {
+  width: 132%;
+  height: 2px;
+  border-radius: 999px;
 }
 
 .unit-marker--uav i::after,
 .unit-badge--uav i::after {
-  transform: translate(-50%, -50%) rotate(-45deg);
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow:
+    -10px -6px 0 currentColor,
+    10px -6px 0 currentColor,
+    -10px 6px 0 currentColor,
+    10px 6px 0 currentColor;
 }
 
 .unit-marker--swarm i,
@@ -1511,10 +1533,6 @@ button.unit-marker {
   filter: saturate(0.65) grayscale(0.35);
 }
 
-.unit-marker--interceptor {
-  animation: interceptor-run 0.8s ease-in-out infinite alternate;
-}
-
 .uav-impact-burst {
   width: 100%;
   height: 100%;
@@ -1534,6 +1552,38 @@ button.unit-marker {
 .uav-collision-line,
 .seoul-target-line {
   animation: map-dash-flow 0.8s linear infinite;
+}
+
+.uav-intercept-complete {
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(56, 189, 248, 0.58);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(8, 47, 73, 0.92), rgba(6, 78, 59, 0.88)),
+    rgba(2, 6, 23, 0.94);
+  box-shadow:
+    0 0 0 3px rgba(34, 197, 94, 0.12),
+    0 0 18px rgba(56, 189, 248, 0.28);
+  animation: intercept-complete-pop 0.72s ease-out infinite alternate;
+}
+
+.uav-intercept-complete strong,
+.uav-intercept-complete span {
+  display: block;
+  color: #ecfdf5;
+  font-weight: 1000;
+  line-height: 1;
+}
+
+.uav-intercept-complete strong {
+  font-size: 10px;
+}
+
+.uav-intercept-complete span {
+  margin-top: -4px;
+  color: #86efac;
+  font-size: 9px;
 }
 
 @keyframes auto-approval-pulse {
@@ -1702,13 +1752,15 @@ button.unit-marker {
   }
 }
 
-@keyframes interceptor-run {
+@keyframes intercept-complete-pop {
   from {
-    transform: scale(calc(var(--cop-map-icon-scale, 1) * 0.94));
+    opacity: 0.78;
+    transform: scale(calc(var(--cop-map-icon-scale, 1) * 0.96));
   }
 
   to {
-    transform: scale(calc(var(--cop-map-icon-scale, 1) * 1.06));
+    opacity: 1;
+    transform: scale(calc(var(--cop-map-icon-scale, 1) * 1.03));
   }
 }
 
@@ -1974,6 +2026,36 @@ button.unit-marker {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+}
+
+.commander-action-card__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.commander-action-card__actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 1000;
+}
+
+.commander-action-card__approve {
+  border: 1px solid rgba(52, 211, 153, 0.52);
+  background: linear-gradient(180deg, rgba(22, 163, 74, 0.84), rgba(20, 83, 45, 0.88));
+  color: #ecfdf5;
+}
+
+.commander-action-card__hold {
+  border: 1px solid rgba(251, 191, 36, 0.34);
+  background: rgba(15, 23, 42, 0.76);
+  color: #fde68a;
 }
 
 .decision-status-grid {

@@ -32,7 +32,9 @@ import type {
   DefenseAsset,
   EngagementRecommendation,
   FighterRaidSnapshot,
+  FighterRaidSnapshotAssignment,
   FighterRaidSnapshotEntity,
+  FighterRaidSnapshotEffect,
   FighterRaidStreamLite,
   FusedTrack,
   PlaybackSpeed,
@@ -137,6 +139,7 @@ type ManualInterceptState = {
   targetTrackId?: string;
   resolvedAtSec?: number;
   missedAtSec?: number;
+  autoApprovedByRedLine?: boolean;
 };
 
 const emptyManualIntercept: ManualInterceptState = { status: "idle" };
@@ -153,6 +156,8 @@ const emptyFighterResponse: FighterResponseState = {};
 
 const dmzReconMissedAfterSec = 28;
 const dmzFighterResponseMissedAfterSec = 40;
+const dmzDroneAutoApproveLat = dmzRedWarLat + 0.04;
+const uavInterceptStopOffsetSec = 5;
 
 const mapIconSize = {
   asset: 24,
@@ -161,7 +166,6 @@ const mapIconSize = {
   trackSelected: 30,
   formation: 8,
   formationSelected: 10,
-  interceptor: 22,
   fighterRaidRed: 6,
   fighterRaidBlue: 7,
   fighterRaidBlueSelected: 10,
@@ -178,6 +182,9 @@ const isAttackDroneAsset = (asset?: DefenseAsset) => {
   const assetText = `${asset.assetId} ${asset.name} ${asset.shortName} ${asset.assetClassId ?? ""}`.toUpperCase();
   return assetText.includes("ATTACK") || assetText.includes("DRONE") || assetText.includes("ATK-DRN");
 };
+
+const isDroneInterceptRecommendation = (recommendation?: EngagementRecommendation) =>
+  recommendation?.threatClassId === "RED_UAV_SWARM" && recommendation.effect === "intercept";
 
 const isReconDroneTrack = (track?: FusedTrack) => {
   if (!track) return false;
@@ -337,6 +344,17 @@ const smoothProgress = (value: number) => {
 };
 
 const interpolateNumber = (from: number, to: number, progress: number) => from + (to - from) * progress;
+
+const manualInterceptProgressAt = (simulationTimeSec: number, resolvedAtSec: number) =>
+  smoothProgress(
+    Math.max(
+      0,
+      Math.min(
+        1,
+        (Math.min(simulationTimeSec, resolvedAtSec + uavInterceptStopOffsetSec) - resolvedAtSec) / uavInterceptStopOffsetSec,
+      ),
+    ),
+  );
 
 const dmzReconIngressPosition = (
   track: FusedTrack,
@@ -551,6 +569,7 @@ const cinematicPhaseForState = ({
 };
 
 const fighterPostEngagementDurationSec = 18;
+const fighterInterceptDurationSec = 10;
 
 const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
@@ -568,52 +587,159 @@ const nearestFighterRaidSnapshot = (stream: FighterRaidStreamLite, timelineSec: 
     Math.abs(snapshot.timelineSec - timelineSec) < Math.abs(nearest.timelineSec - timelineSec) ? snapshot : nearest,
   );
 
+const fighterRaidTimelineSnapshot = (stream: FighterRaidStreamLite, timelineSec: number): FighterRaidSnapshot => {
+  const firstSec = stream.snapshots[0]?.timelineSec ?? 0;
+  const lastSec = stream.snapshots.at(-1)?.timelineSec ?? firstSec;
+  return nearestFighterRaidSnapshot(stream, clampNumber(Math.round(timelineSec), firstSec, lastSec));
+};
+
 const fighterRaidSnapshotAt = (
   stream: FighterRaidStreamLite,
   simulationTimeSec: number,
   spawnSec: number,
 ): FighterRaidSnapshot => {
-  const firstSec = stream.snapshots[0]?.timelineSec ?? 0;
-  const lastSec = stream.snapshots.at(-1)?.timelineSec ?? firstSec;
-  const timelineSec = clampNumber(Math.round(simulationTimeSec - spawnSec), firstSec, lastSec);
-  return nearestFighterRaidSnapshot(stream, timelineSec);
+  return fighterRaidTimelineSnapshot(stream, simulationTimeSec - spawnSec);
 };
 
-const fighterRaidFirstAssignmentSec = (stream: FighterRaidStreamLite) =>
-  stream.snapshots.find((snapshot) => snapshot.assignments.length > 0)?.timelineSec ?? stream.snapshots[0]?.timelineSec ?? 0;
-
-const fighterRaidRenderTimeSec = (
+const fighterRaidEntityAt = (
   stream: FighterRaidStreamLite,
-  simulationTimeSec: number,
-  spawnSec: number,
-  response: FighterResponseState,
-) => {
-  const firstSec = stream.snapshots[0]?.timelineSec ?? 0;
-  const lastSec = stream.snapshots.at(-1)?.timelineSec ?? firstSec;
-  const firstAssignmentSec = fighterRaidFirstAssignmentSec(stream);
-  if (response.acceptedAtSec === undefined) return simulationTimeSec;
-
-  const acceptedTimelineSec = response.acceptedAtSec - spawnSec;
-  if (acceptedTimelineSec >= firstAssignmentSec) return simulationTimeSec;
-
-  const elapsedSinceApprovalSec = Math.max(0, simulationTimeSec - response.acceptedAtSec);
-  return spawnSec + clampNumber(firstAssignmentSec + elapsedSinceApprovalSec, firstSec, lastSec);
-};
-
-const blueFighterEngagementPosition = (
-  entity: FighterRaidSnapshotEntity,
-  assignment: FighterRaidSnapshot["assignments"][number],
+  entityId: string,
   timelineSec: number,
-) => {
-  const startSec = assignment.startSec ?? timelineSec;
-  const resultSec = assignment.resultSec ?? startSec + 2;
-  const progress = smoothProgress(clampNumber((timelineSec - startSec) / Math.max(0.5, resultSec - startSec), 0, 1));
+): FighterRaidSnapshotEntity | undefined => {
+  const frames = stream.snapshots
+    .map((snapshot) => ({
+      timelineSec: snapshot.timelineSec,
+      entity: snapshot.entities.find((item) => item.entityId === entityId),
+    }))
+    .filter((frame): frame is { timelineSec: number; entity: FighterRaidSnapshotEntity } => Boolean(frame.entity))
+    .sort((a, b) => a.timelineSec - b.timelineSec);
+
+  let previousIndex = -1;
+  for (let index = frames.length - 1; index >= 0; index -= 1) {
+    if (frames[index].timelineSec <= timelineSec) {
+      previousIndex = index;
+      break;
+    }
+  }
+  const previous = previousIndex >= 0 ? frames[previousIndex] : undefined;
+  const next = frames.find((frame) => frame.timelineSec > timelineSec);
+
+  if (!previous) return next?.entity;
+  if (!next) {
+    const beforePrevious = previousIndex > 0 ? frames[previousIndex - 1] : undefined;
+    if (!beforePrevious || timelineSec <= previous.timelineSec) return previous.entity;
+
+    const deltaSec = Math.max(1, previous.timelineSec - beforePrevious.timelineSec);
+    const extension = Math.min(8, (timelineSec - previous.timelineSec) / deltaSec);
+    const latDelta = previous.entity.lat - beforePrevious.entity.lat;
+    const lngDelta = previous.entity.lng - beforePrevious.entity.lng;
+
+    return {
+      ...previous.entity,
+      lat: previous.entity.lat + latDelta * extension,
+      lng: previous.entity.lng + lngDelta * extension,
+      lon: previous.entity.lng + lngDelta * extension,
+    };
+  }
+
+  if (next.timelineSec === previous.timelineSec) return previous.entity;
+
+  const progress = smoothProgress((timelineSec - previous.timelineSec) / (next.timelineSec - previous.timelineSec));
+  const lat = interpolateNumber(previous.entity.lat, next.entity.lat, progress);
+  const lng = interpolateNumber(previous.entity.lng, next.entity.lng, progress);
 
   return {
-    lat: interpolateNumber(assignment.line.from.lat ?? entity.lat, assignment.line.to.lat, progress),
-    lng: interpolateNumber(assignment.line.from.lng ?? entity.lng, assignment.line.to.lng, progress),
+    ...previous.entity,
+    status: next.entity.status,
+    lat,
+    lng,
+    lon: lng,
+    altitudeFt: Math.round(interpolateNumber(previous.entity.altitudeFt, next.entity.altitudeFt, progress)),
+    kinematics: {
+      ...previous.entity.kinematics,
+      headingDeg: interpolateNumber(previous.entity.kinematics.headingDeg, next.entity.kinematics.headingDeg, progress),
+      speedKts: interpolateNumber(previous.entity.kinematics.speedKts, next.entity.kinematics.speedKts, progress),
+    },
   };
 };
+
+const fighterRaidSideEntitiesAt = (stream: FighterRaidStreamLite, side: "RED" | "BLUE", timelineSec: number) => {
+  const ids = Array.from(new Set(stream.snapshots.flatMap((snapshot) => snapshot.entities.filter((entity) => entity.side === side).map((entity) => entity.entityId))));
+  return ids.map((entityId) => fighterRaidEntityAt(stream, entityId, timelineSec)).filter((entity): entity is FighterRaidSnapshotEntity => Boolean(entity));
+};
+
+const fighterRaidPrimaryAssignments = (stream: FighterRaidStreamLite) => {
+  const byBlue = new Map<string, FighterRaidSnapshotAssignment>();
+  stream.snapshots.forEach((snapshot) => {
+    snapshot.assignments.forEach((assignment) => {
+      if (!byBlue.has(assignment.blueEntityId)) byBlue.set(assignment.blueEntityId, assignment);
+    });
+  });
+  return Array.from(byBlue.values());
+};
+
+const fighterRaidTargetAssignments = (stream: FighterRaidStreamLite) => {
+  const byRed = new Map<string, FighterRaidSnapshotAssignment>();
+  stream.snapshots.forEach((snapshot) => {
+    snapshot.assignments.forEach((assignment) => {
+      if (!byRed.has(assignment.redEntityId)) byRed.set(assignment.redEntityId, assignment);
+    });
+  });
+  return Array.from(byRed.values());
+};
+
+const fighterRaidBlueEngagementEntity = (
+  stream: FighterRaidStreamLite,
+  assignment: FighterRaidSnapshotAssignment,
+  progress: number,
+  stopTimelineSec: number,
+): FighterRaidSnapshotEntity | undefined => {
+  const baseEntity = fighterRaidEntityAt(stream, assignment.blueEntityId, 0);
+  if (!baseEntity) return undefined;
+
+  const targetEntity = fighterRaidEntityAt(stream, assignment.redEntityId, stopTimelineSec);
+  const target = targetEntity ?? assignment.line.to;
+  const lat = interpolateNumber(baseEntity.lat, target.lat, progress);
+  const lng = interpolateNumber(baseEntity.lng, target.lng, progress);
+
+  return {
+    ...baseEntity,
+    assignmentId: assignment.assignmentId,
+    status: progress >= 1 ? "WEAPONS_SUPPORT" : progress > 0 ? "INTERCEPTING" : "SCRAMBLE_READY",
+    lat,
+    lng,
+    lon: lng,
+    kinematics: {
+      ...baseEntity.kinematics,
+      headingDeg: Math.round(baseEntity.kinematics.headingDeg),
+    },
+  };
+};
+
+const fighterRaidSyntheticEffects = (
+  stream: FighterRaidStreamLite,
+  assignments: FighterRaidSnapshotAssignment[],
+  stopTimelineSec: number,
+): FighterRaidSnapshotEffect[] =>
+  assignments.map((assignment, index) => {
+    const targetEntity = fighterRaidEntityAt(stream, assignment.redEntityId, stopTimelineSec);
+    const target = targetEntity ?? assignment.line.to;
+    return {
+      effectId: `SIM-FTR-INTERCEPT-${assignment.redEntityId}`,
+      type: "KINETIC_INTERCEPT",
+      startSec: stopTimelineSec,
+      durationSec: 6,
+      lat: target.lat,
+      lng: target.lng,
+      lon: target.lng,
+      altitudeFt: targetEntity?.altitudeFt,
+      sourceEntityId: assignment.blueEntityId,
+      targetEntityId: assignment.redEntityId,
+      outcome: index < 50 ? "intercepted" : "suppressed",
+      displayHint: "approval-relative intercept point",
+      noExecute: true,
+    };
+  });
 
 const firstSnapshotRedCrossing = (snapshot: FighterRaidSnapshot | undefined, boundaryLat: number) =>
   snapshot?.entities.find((entity) => entity.side === "RED" && entity.lat <= boundaryLat);
@@ -1051,6 +1177,17 @@ function CopMap({
     const sensorAsset = assets.find((asset) => asset.assetId === "BLUE-SENSOR-NET-01") ?? assets.find((asset) => asset.effect === "track-custody");
     const attackDroneAsset = assets.find(isAttackDroneAsset);
     const reconBoundaryStatus = reconTrack?.lat && reconTrack.lat <= dmzRedWarLat ? "RED WAR BREACH" : reconTrack?.lat && reconTrack.lat <= dmzOrangeResponseLat ? "AUTO INTERCEPT" : "SENSOR HIT";
+    const engagedDroneTargetTrack =
+      (manualEngagement.targetTrackId ? tracks.find((track) => track.trackId === manualEngagement.targetTrackId) : undefined) ?? reconTrack;
+    const manualInterceptStopSec =
+      manualEngagement.status === "resolved" && manualEngagement.resolvedAtSec !== undefined
+        ? manualEngagement.resolvedAtSec + uavInterceptStopOffsetSec
+        : undefined;
+    const manualInterceptRenderTimeSec = manualInterceptStopSec !== undefined ? Math.min(simulationTimeSec, manualInterceptStopSec) : simulationTimeSec;
+    const manualInterceptProgress =
+      manualEngagement.status === "resolved" && manualEngagement.resolvedAtSec !== undefined
+        ? manualInterceptProgressAt(simulationTimeSec, manualEngagement.resolvedAtSec)
+        : 0;
 
     if (sensorAsset && simulationTimeSec >= 6) {
       const sensorCoverageKm = Math.max(sensorAsset.rangeKm, 180);
@@ -1081,7 +1218,9 @@ function CopMap({
     }
 
     if (reconTrack) {
-      const trailPoints = trackTrailPoints(reconTrack, trajectorySpecs, simulationTimeSec);
+      const reconTrailTimeSec =
+        manualEngagement.status === "resolved" && manualEngagement.targetTrackId === reconTrack.trackId ? manualInterceptRenderTimeSec : simulationTimeSec;
+      const trailPoints = trackTrailPoints(reconTrack, trajectorySpecs, reconTrailTimeSec);
       if (trailPoints.length >= 2) {
         L.polyline(trailPoints, {
           color: "#ef4444",
@@ -1171,9 +1310,30 @@ function CopMap({
     assets.forEach((asset) => {
       const color = assetColor(asset);
       const unit = assetUnitVisual(asset);
+      const attackDrone = isAttackDroneAsset(asset);
       const selected = asset.assetId === selectedAssetId || asset.assetId === manualEngagement.assetId;
-      const launchReady = isAttackDroneAsset(asset) && manualEngagement.status === "idle";
+      const launchReady = attackDrone && manualEngagement.status === "idle";
+      const droneInterceptActive = attackDrone && manualEngagement.status === "resolved" && manualEngagement.assetId === asset.assetId && Boolean(engagedDroneTargetTrack);
+      const droneInterceptComplete = droneInterceptActive && manualInterceptProgress >= 1;
+      const markerLat =
+        droneInterceptActive && engagedDroneTargetTrack
+          ? interpolateNumber(asset.lat, engagedDroneTargetTrack.lat, manualInterceptProgress)
+          : asset.lat;
+      const markerLng =
+        droneInterceptActive && engagedDroneTargetTrack
+          ? interpolateNumber(asset.lng, engagedDroneTargetTrack.lng, manualInterceptProgress)
+          : asset.lng;
       const assetSize = scaleSize(selected ? mapIconSize.assetSelected : mapIconSize.asset, 9);
+      const markerClasses = clsx(
+        "unit-marker",
+        attackDrone ? "unit-marker--track unit-marker--asset-drone" : "unit-marker--asset",
+        `unit-marker--${unit.sideTone}`,
+        `unit-marker--${unit.iconKey}`,
+        selected && "unit-marker--armed",
+        launchReady && "unit-marker--launch-ready",
+        droneInterceptActive && "unit-marker--attacking",
+        droneInterceptComplete && "unit-marker--weapon-release",
+      );
       L.circle([asset.lat, asset.lng], {
         radius: asset.rangeKm * 1000,
         color,
@@ -1184,14 +1344,14 @@ function CopMap({
         fillColor: color,
       }).addTo(layer);
 
-      L.marker([asset.lat, asset.lng], {
+      L.marker([markerLat, markerLng], {
         icon: L.divIcon({
           className: "",
-          html: `<button class="unit-marker unit-marker--asset unit-marker--${unit.sideTone} unit-marker--${unit.iconKey} ${selected ? "unit-marker--armed" : ""} ${launchReady ? "unit-marker--launch-ready" : ""}" style="--unit-color:${color};width:${assetSize}px;height:${assetSize}px" title="${unitVisualLabel(unit)}"><i></i></button>`,
+          html: `<button class="${markerClasses}" style="--unit-color:${color};width:${assetSize}px;height:${assetSize}px" title="${unitVisualLabel(unit)}"><i></i></button>`,
           iconSize: [assetSize, assetSize],
           iconAnchor: [assetSize / 2, assetSize / 2],
         }),
-        zIndexOffset: selected ? 1100 : 450,
+        zIndexOffset: droneInterceptActive ? 1320 : selected ? 1100 : 450,
       })
         .on("click", () => onSelectAsset(asset.assetId))
         .bindTooltip(`${unitVisualLabel(unit)} | ${asset.shortName} | ${asset.readiness}%`, {
@@ -1208,9 +1368,9 @@ function CopMap({
       const interceptTargeted = manualEngagement.status === "resolved" && manualEngagement.targetTrackId === track.trackId;
       const interceptProgress =
         interceptTargeted && manualEngagement.resolvedAtSec !== undefined
-          ? smoothProgress(Math.min(1, Math.max(0, simulationTimeSec - manualEngagement.resolvedAtSec) / 6))
+          ? manualInterceptProgressAt(simulationTimeSec, manualEngagement.resolvedAtSec)
           : 0;
-      const neutralizedByUav = interceptTargeted && interceptProgress >= 0.88;
+      const neutralizedByUav = interceptTargeted && interceptProgress >= 1;
       const addTrackLink = () => {
         L.polyline(
           [
@@ -1283,30 +1443,40 @@ function CopMap({
     });
 
     if (fighterRaidStream && fighterRaidTrack) {
-      const fighterRaidRenderTime = fighterRaidRenderTimeSec(fighterRaidStream, simulationTimeSec, fighterRaidSpawnAtSec, fighterResponse);
-      const fighterRaidTimelineSec = clampNumber(
-        fighterRaidRenderTime - fighterRaidSpawnAtSec,
-        fighterRaidStream.snapshots[0]?.timelineSec ?? 0,
-        fighterRaidStream.snapshots.at(-1)?.timelineSec ?? 0,
-      );
-      const snapshot = fighterRaidSnapshotAt(fighterRaidStream, fighterRaidRenderTime, fighterRaidSpawnAtSec);
-      const snapshotEntities = snapshot.entities;
-      const redEntities = snapshotEntities.filter((entity) => entity.side === "RED");
-      const blueEntities = snapshotEntities.filter((entity) => entity.side === "BLUE");
-      const fighterRaidAttackConfirmed = Boolean(firstSnapshotRedCrossing(snapshot, dmzBlueWatchLat));
       const fighterEngagementActive = fighterResponse.acceptedAtSec !== undefined;
-      const activeAssignments = fighterEngagementActive ? snapshot.assignments : [];
-      const activeEffects = fighterEngagementActive ? snapshot.effects : [];
+      const rawFighterRaidTimelineSec = simulationTimeSec - fighterRaidSpawnAtSec;
+      const acceptedFighterRaidTimelineSec = fighterEngagementActive
+        ? Math.max(0, (fighterResponse.acceptedAtSec ?? simulationTimeSec) - fighterRaidSpawnAtSec)
+        : undefined;
+      const fighterRaidStopTimelineSec =
+        acceptedFighterRaidTimelineSec !== undefined ? acceptedFighterRaidTimelineSec + fighterInterceptDurationSec : undefined;
+      const fighterRaidTimelineSec =
+        fighterRaidStopTimelineSec !== undefined ? Math.min(rawFighterRaidTimelineSec, fighterRaidStopTimelineSec) : rawFighterRaidTimelineSec;
+      const snapshot = fighterRaidTimelineSnapshot(fighterRaidStream, fighterRaidTimelineSec);
+      const rawFighterInterceptProgress = fighterEngagementActive
+        ? Math.max(0, Math.min(1, (simulationTimeSec - (fighterResponse.acceptedAtSec ?? simulationTimeSec)) / fighterInterceptDurationSec))
+        : 0;
+      const fighterInterceptProgress = smoothProgress(rawFighterInterceptProgress);
+      const primaryAssignments = fighterRaidPrimaryAssignments(fighterRaidStream);
+      const targetAssignments = fighterRaidTargetAssignments(fighterRaidStream);
+      const redEntities = fighterEngagementActive
+        ? fighterRaidSideEntitiesAt(fighterRaidStream, "RED", fighterRaidTimelineSec)
+        : snapshot.entities.filter((entity) => entity.side === "RED");
+      const blueEntities =
+        fighterEngagementActive && fighterRaidStopTimelineSec !== undefined
+          ? primaryAssignments
+              .map((assignment) => fighterRaidBlueEngagementEntity(fighterRaidStream, assignment, fighterInterceptProgress, fighterRaidStopTimelineSec))
+              .filter((entity): entity is FighterRaidSnapshotEntity => Boolean(entity))
+          : fighterRaidSideEntitiesAt(fighterRaidStream, "BLUE", 0);
+      const fighterRaidAttackConfirmed = Boolean(firstSnapshotRedCrossing(snapshot, dmzBlueWatchLat));
+      const activeAssignments = fighterEngagementActive ? primaryAssignments : [];
+      const redTargetAssignments = fighterEngagementActive ? targetAssignments : [];
+      const activeEffects =
+        fighterEngagementActive && fighterRaidStopTimelineSec !== undefined && rawFighterInterceptProgress >= 0.98
+          ? fighterRaidSyntheticEffects(fighterRaidStream, redTargetAssignments, fighterRaidStopTimelineSec)
+          : [];
       const assignmentByBlue = new Map(activeAssignments.map((assignment) => [assignment.blueEntityId, assignment]));
-      const assignmentByRed = new Map(activeAssignments.map((assignment) => [assignment.redEntityId, assignment]));
-      const blueEngagementPositionById = new Map(
-        activeAssignments
-          .map((assignment) => {
-            const blueEntity = blueEntities.find((entity) => entity.entityId === assignment.blueEntityId);
-            return blueEntity ? [assignment.blueEntityId, blueFighterEngagementPosition(blueEntity, assignment, fighterRaidTimelineSec)] as const : undefined;
-          })
-          .filter((item): item is readonly [string, { lat: number; lng: number }] => Boolean(item)),
-      );
+      const assignmentByRed = new Map(redTargetAssignments.map((assignment) => [assignment.redEntityId, assignment]));
       const raidAnchor =
         redEntities.length > 0
           ? {
@@ -1358,11 +1528,15 @@ function CopMap({
       }).addTo(layer);
 
       activeAssignments.forEach((assignment) => {
-        const from = blueEngagementPositionById.get(assignment.blueEntityId) ?? assignment.line.from;
+        const blueEntity = blueEntities.find((entity) => entity.entityId === assignment.blueEntityId);
+        const targetEntity =
+          fighterRaidStopTimelineSec !== undefined ? fighterRaidEntityAt(fighterRaidStream, assignment.redEntityId, fighterRaidStopTimelineSec) : undefined;
+        const from = blueEntity ? { lat: blueEntity.lat, lng: blueEntity.lng } : assignment.line.from;
+        const to = targetEntity ? { lat: targetEntity.lat, lng: targetEntity.lng } : assignment.line.to;
         L.polyline(
           [
             [from.lat, from.lng],
-            [assignment.line.to.lat, assignment.line.to.lng],
+            [to.lat, to.lng],
           ],
           {
             color: "#38bdf8",
@@ -1381,6 +1555,7 @@ function CopMap({
 
       [...redEntities, ...blueEntities].forEach((entity) => {
         const isRed = entity.side === "RED";
+        const entityTimelineSec = isRed ? Math.round(fighterRaidTimelineSec) : Math.round(rawFighterInterceptProgress * fighterInterceptDurationSec);
         const assignment = isRed ? assignmentByRed.get(entity.entityId) : assignmentByBlue.get(entity.entityId);
         const selected = !isRed && (fighterResponse.selectedFighterId === entity.entityId || Boolean(assignment));
         const responseMissed = entity.status === "OUT_OF_MISSILES" || entity.status === "REPAIR_REQUIRED";
@@ -1392,10 +1567,7 @@ function CopMap({
           fighterResponse.acceptedAtSec === undefined &&
           !fighterResponse.missedAtSec;
         const size = scaleSize(isRed ? mapIconSize.fighterRaidRed : selected ? mapIconSize.fighterRaidBlueSelected : mapIconSize.fighterRaidBlue, isRed ? 3 : 4);
-        const engagementPosition = !isRed && assignment ? blueEngagementPositionById.get(entity.entityId) : undefined;
-        const markerLat = engagementPosition?.lat ?? entity.lat;
-        const markerLng = engagementPosition?.lng ?? entity.lng;
-        const marker = L.marker([markerLat, markerLng], {
+        const marker = L.marker([entity.lat, entity.lng], {
           icon: L.divIcon({
             className: "",
             html: `<button class="unit-marker unit-marker--track unit-marker--formation unit-marker--fighter-raid-${isRed ? "red" : "blue"} unit-marker--${isRed ? "red" : "blue"} unit-marker--fighter ${assignment ? "unit-marker--targeted unit-marker--attacking" : ""} ${selected ? "unit-marker--response-selected" : ""} ${standby ? "unit-marker--standby" : ""} ${responseReady ? "unit-marker--response-ready" : ""} ${responseMissed ? "unit-marker--response-missed" : ""}" style="--unit-color:${isRed ? "#ef4444" : "#38bdf8"};width:${size}px;height:${size}px" title="${entity.entityId}"><i></i></button>`,
@@ -1408,7 +1580,7 @@ function CopMap({
         marker
           .on("click", () => (isRed ? onSelectTrack(fighterRaidTrack.trackId) : onSelectResponseFighter(entity.entityId)))
           .bindTooltip(
-            `${snapshotEntityUnitLabel(entity)} | ${entity.entityId} | ${Math.round(entity.kinematics.speedKts)}kt | H${Math.round(entity.kinematics.headingDeg)} | ${entity.status} | S+${snapshot.timelineSec}`,
+            `${snapshotEntityUnitLabel(entity)} | ${entity.entityId} | ${Math.round(entity.kinematics.speedKts)}kt | H${Math.round(entity.kinematics.headingDeg)} | ${entity.status} | S+${entityTimelineSec}`,
             {
               className: "cop-tip cop-tip--compact",
               direction: "top",
@@ -1417,45 +1589,42 @@ function CopMap({
           .addTo(layer);
       });
 
-      activeEffects
-        .filter((effect) => snapshot.timelineSec >= effect.startSec && snapshot.timelineSec < effect.startSec + effect.durationSec)
-        .forEach((effect) => {
-          const effectSize = scaleSize(50, 18);
-          L.marker([effect.lat, effect.lng], {
-            icon: L.divIcon({
-              className: "",
-              html: `<div class="uav-impact-burst fighter-impact-burst"></div>`,
-              iconSize: [effectSize, effectSize],
-              iconAnchor: [effectSize / 2, effectSize / 2],
-            }),
-            interactive: false,
-            zIndexOffset: 1420,
-          }).addTo(layer);
+      activeEffects.forEach((effect) => {
+        const effectSize = scaleSize(50, 18);
+        L.marker([effect.lat, effect.lng], {
+          icon: L.divIcon({
+            className: "",
+            html: `<div class="uav-impact-burst fighter-impact-burst"></div>`,
+            iconSize: [effectSize, effectSize],
+            iconAnchor: [effectSize / 2, effectSize / 2],
+          }),
+          interactive: false,
+          zIndexOffset: 1420,
+        }).addTo(layer);
 
-          L.circleMarker([effect.lat, effect.lng], {
-            radius: scaleRadius(14, 5),
-            color: "#38bdf8",
-            weight: 2,
-            opacity: 0.68,
-            fillColor: "#ef4444",
-            fillOpacity: 0.08,
-            className: "fighter-impact-ring",
+        L.circleMarker([effect.lat, effect.lng], {
+          radius: scaleRadius(14, 5),
+          color: "#38bdf8",
+          weight: 2,
+          opacity: 0.68,
+          fillColor: "#ef4444",
+          fillOpacity: 0.08,
+          className: "fighter-impact-ring",
+        })
+          .bindTooltip(`${effect.type} | ${effect.targetEntityId ?? "RED-FTR"} | ${effect.durationSec}s`, {
+            className: "cop-tip cop-tip--compact",
+            direction: "top",
           })
-            .bindTooltip(`${effect.type} | ${effect.targetEntityId ?? "RED-FTR"} | ${effect.durationSec}s`, {
-              className: "cop-tip cop-tip--compact",
-              direction: "top",
-            })
-            .addTo(layer);
-        });
+          .addTo(layer);
+      });
     }
 
     if (manualEngagement.status === "resolved" && manualEngagement.assetId && manualEngagement.targetTrackId) {
       const engagedAsset = assets.find((asset) => asset.assetId === manualEngagement.assetId);
       const targetTrack = tracks.find((track) => track.trackId === manualEngagement.targetTrackId);
       if (engagedAsset && targetTrack) {
-        const interceptProgress = smoothProgress(Math.min(1, Math.max(0, simulationTimeSec - (manualEngagement.resolvedAtSec ?? simulationTimeSec)) / 6));
-        const interceptLat = interpolateNumber(engagedAsset.lat, targetTrack.lat, interceptProgress);
-        const interceptLng = interpolateNumber(engagedAsset.lng, targetTrack.lng, interceptProgress);
+        const interceptLat = interpolateNumber(engagedAsset.lat, targetTrack.lat, manualInterceptProgress);
+        const interceptLng = interpolateNumber(engagedAsset.lng, targetTrack.lng, manualInterceptProgress);
 
         L.polyline(
           [
@@ -1474,19 +1643,7 @@ function CopMap({
           .bindTooltip("BLUE-UAV COLLISION INTERCEPT", { className: "cop-tip cop-tip--compact", direction: "top" })
           .addTo(layer);
 
-        const interceptorSize = scaleSize(mapIconSize.interceptor, 8);
-        L.marker([interceptLat, interceptLng], {
-          icon: L.divIcon({
-            className: "",
-            html: `<button class="unit-marker unit-marker--interceptor unit-marker--blue unit-marker--uav unit-marker--armed" style="--unit-color:#38bdf8;width:${interceptorSize}px;height:${interceptorSize}px" title="BLUE-UAV"><i></i></button>`,
-            iconSize: [interceptorSize, interceptorSize],
-            iconAnchor: [interceptorSize / 2, interceptorSize / 2],
-          }),
-          interactive: false,
-          zIndexOffset: 1300,
-        }).addTo(layer);
-
-        if (interceptProgress >= 0.88) {
+        if (manualInterceptProgress >= 1) {
           const uavImpactSize = scaleSize(50, 18);
           L.marker([targetTrack.lat, targetTrack.lng], {
             icon: L.divIcon({
@@ -1507,6 +1664,18 @@ function CopMap({
             fillColor: "#38bdf8",
             fillOpacity: 0.06,
             className: "uav-impact-ring",
+          }).addTo(layer);
+
+          const completeMarkerSize = scalePair(118, 34, 64, 20);
+          L.marker([targetTrack.lat + 0.035, targetTrack.lng], {
+            icon: L.divIcon({
+              className: "",
+              html: `<div class="uav-intercept-complete" style="width:${completeMarkerSize[0]}px;height:${completeMarkerSize[1]}px"><strong>INTERCEPT</strong><span>COMPLETE</span></div>`,
+              iconSize: completeMarkerSize,
+              iconAnchor: centerAnchor(completeMarkerSize),
+            }),
+            interactive: false,
+            zIndexOffset: 1440,
           }).addTo(layer);
         }
       }
@@ -1582,17 +1751,22 @@ function CommanderActionPanel({
   recommendations,
   decisions,
   alertMode,
+  onDecision,
 }: {
   urgentRecommendation?: EngagementRecommendation;
   recommendations: EngagementRecommendation[];
   decisions: Record<string, DecisionState>;
   alertMode: AlertMode;
+  onDecision?: (id: string, decision: DecisionState) => void;
 }) {
   const approvedCount = recommendations.filter((recommendation) => decisions[recommendation.id] === "approved").length;
   const heldCount = recommendations.filter((recommendation) => decisions[recommendation.id] === "held").length;
   const pendingCount = recommendations.filter((recommendation) => (decisions[recommendation.id] ?? "pending") === "pending").length;
   const threatUnit = urgentRecommendation ? advisoryThreatVisual(urgentRecommendation) : undefined;
   const resourceUnit = urgentRecommendation ? advisoryResourceVisual(urgentRecommendation) : undefined;
+  const isDroneIntercept = isDroneInterceptRecommendation(urgentRecommendation);
+  const urgentDecision = urgentRecommendation ? decisions[urgentRecommendation.id] ?? "pending" : undefined;
+  const showInlineDecision = Boolean(isDroneIntercept && urgentRecommendation && urgentDecision === "pending" && onDecision);
 
   return (
     <section className="panel commander-action-panel">
@@ -1608,7 +1782,7 @@ function CommanderActionPanel({
         {urgentRecommendation && threatUnit && resourceUnit ? (
           <article className="commander-action-card commander-action-card--urgent">
             <header>
-              <span className="decision-chip decision-chip--pending">팝업 결심 대기</span>
+              <span className="decision-chip decision-chip--pending">{isDroneIntercept ? "요격 승인 보류" : "팝업 결심 대기"}</span>
               <strong>{advisoryStatusLabel[urgentRecommendation.roeStatus]}</strong>
             </header>
             <div className="commander-action-card__route">
@@ -1621,7 +1795,23 @@ function CommanderActionPanel({
                 <strong>{urgentRecommendation.assetName}</strong>
               </div>
             </div>
-            <p>긴급 결심 대기 상태입니다. 표적·자원 후보와 근거를 확인하고 결심을 선택하십시오.</p>
+            <p>
+              {isDroneIntercept
+                ? "북측 드론이 대응선에 진입했습니다. 요격 드론 출격 전술은 승인 보류 상태이며, 추천안 채택 시 BLUE-UAV가 표적으로 이동합니다."
+                : "긴급 결심 대기 상태입니다. 표적·자원 후보와 근거를 확인하고 결심을 선택하십시오."}
+            </p>
+            {showInlineDecision && urgentRecommendation ? (
+              <div className="commander-action-card__actions">
+                <button className="commander-action-card__approve" onClick={() => onDecision?.(urgentRecommendation.id, "approved")}>
+                  <CheckCircle2 size={16} />
+                  승인
+                </button>
+                <button className="commander-action-card__hold" onClick={() => onDecision?.(urgentRecommendation.id, "held")}>
+                  <CircleDashed size={16} />
+                  보류
+                </button>
+              </div>
+            ) : null}
           </article>
         ) : (
           <article className={clsx("commander-action-card", alertMode === "watch" ? "commander-action-card--idle" : "commander-action-card--monitor")}>
@@ -1666,6 +1856,7 @@ function TacticalAdvicePopup({
   const threatUnit = advisoryThreatVisual(recommendation);
   const resourceUnit = advisoryResourceVisual(recommendation);
   const isFighterRaidRecommendation = recommendation.threatClassId === "RED_FIGHTER_RAID";
+  const isDroneIntercept = isDroneInterceptRecommendation(recommendation);
 
   return (
     <motion.aside
@@ -1693,6 +1884,8 @@ function TacticalAdvicePopup({
       <p className="tactical-advice-popup__summary">
         {isFighterRaidRecommendation
           ? `RED WAR 월선 전 ${recommendation.assetName} 기반 ${effectLabel[recommendation.effect]} 전술을 사용할지 지휘관 결심이 필요합니다.`
+          : isDroneIntercept
+            ? `북측 정찰 드론이 대응선에 진입했습니다. ${recommendation.assetName} 출격 요격 전술은 지휘관 승인 보류 상태입니다.`
           : `임계 상황이 감지되어 ${recommendation.assetName} 기반 ${effectLabel[recommendation.effect]} 후보안을 지휘관에게 올립니다.`}
       </p>
       <dl className="tactical-advice-popup__facts">
@@ -1922,6 +2115,8 @@ function App() {
       : model.tracks.reduce((sum, track) => sum + track.confidence, 0) / Math.max(model.tracks.length, 1),
   );
   const pendingAdviceRecommendations = model.recommendations.filter((item) => (decisions[item.id] ?? "pending") === "pending");
+  const droneInterceptRecommendation = model.recommendations.find(isDroneInterceptRecommendation);
+  const pendingDroneInterceptRecommendation = pendingAdviceRecommendations.find(isDroneInterceptRecommendation);
   const nonFriendlyTracks = model.tracks.filter((track) => track.classification !== "friendly");
   const topThreatTrack = nonFriendlyTracks[0];
   const topThreatScore = topThreatTrack?.threatScore ?? 0;
@@ -1929,10 +2124,27 @@ function App() {
   const fighterRaidDecisionTrack = model.tracks.find(isFighterFormationTrack);
   const displayTimeSec = isLive || postEngagementAnimating ? visualTimeSec : model.simulationTimeSec;
   const displayTimeLabel = formatDisplayTime(displayTimeSec);
-  const displayTracks = useMemo(
-    () => animateTracks(model.tracks, model.simulation.messages, displayTimeSec, model.simulation.trajectorySpecs),
-    [displayTimeSec, model.simulation.messages, model.simulation.trajectorySpecs, model.tracks],
-  );
+  const displayTracks = useMemo(() => {
+    const animatedTracks = animateTracks(model.tracks, model.simulation.messages, displayTimeSec, model.simulation.trajectorySpecs);
+    if (manualIntercept.status !== "resolved" || !manualIntercept.targetTrackId || manualIntercept.resolvedAtSec === undefined) return animatedTracks;
+
+    const interceptStopSec = manualIntercept.resolvedAtSec + uavInterceptStopOffsetSec;
+    if (displayTimeSec <= interceptStopSec) return animatedTracks;
+
+    const frozenTracks = animateTracks(model.tracks, model.simulation.messages, interceptStopSec, model.simulation.trajectorySpecs);
+    const frozenTargetTrack = frozenTracks.find((track) => track.trackId === manualIntercept.targetTrackId);
+    if (!frozenTargetTrack) return animatedTracks;
+
+    return animatedTracks.map((track) => (track.trackId === manualIntercept.targetTrackId ? frozenTargetTrack : track));
+  }, [
+    displayTimeSec,
+    manualIntercept.resolvedAtSec,
+    manualIntercept.status,
+    manualIntercept.targetTrackId,
+    model.simulation.messages,
+    model.simulation.trajectorySpecs,
+    model.tracks,
+  ]);
   const fighterRaidVisualSpawnSec = fighterRaidSpawnSec(fighterRaidDecisionTrack, model.simulation.trajectorySpecs);
   const fighterRaidDecisionSnapshot =
     fighterRaidDecisionTrack && model.simulation.fighterRaidStream
@@ -1948,6 +2160,20 @@ function App() {
       : undefined;
   const fighterRaidBlueLineBreached = Boolean(fighterRaidBlueLineBreachEntity);
   const fighterRaidRedLineBreached = Boolean(fighterRaidRedLineBreachEntity);
+  const reconDecisionTrack = displayTracks.find(isReconDroneTrack);
+  const droneRedAutoApprovalPending =
+    isDmzEscalation &&
+    Boolean(reconDecisionTrack) &&
+    (reconDecisionTrack?.lat ?? Number.POSITIVE_INFINITY) <= dmzDroneAutoApproveLat &&
+    manualIntercept.status !== "resolved" &&
+    manualIntercept.status !== "missed";
+  const droneInterceptDecisionPending =
+    isDmzEscalation &&
+    Boolean(reconDecisionTrack) &&
+    (reconDecisionTrack?.lat ?? Number.POSITIVE_INFINITY) <= dmzOrangeResponseLat &&
+    (reconDecisionTrack?.lat ?? Number.NEGATIVE_INFINITY) > dmzDroneAutoApproveLat &&
+    (manualIntercept.status === "idle" || manualIntercept.status === "armed") &&
+    model.simulationTimeSec < dmzReconMissedAfterSec;
   const fighterRaidNeedsCommanderDecision =
     fighterRaidBlueLineBreached &&
     !fighterRaidRedLineBreached &&
@@ -1955,11 +2181,35 @@ function App() {
     fighterResponse.acceptedAtSec === undefined &&
     !fighterResponse.missedAtSec;
   useEffect(() => {
+    if (!droneRedAutoApprovalPending) return;
+    const reconTrack = displayTracks.find(isReconDroneTrack);
+    const attackDroneAsset = model.assets.find(isAttackDroneAsset);
+    if (!reconTrack || !attackDroneAsset) return;
+
+    setManualIntercept({
+      status: "resolved",
+      assetId: droneInterceptRecommendation?.assetId ?? manualIntercept.assetId ?? attackDroneAsset.assetId,
+      targetTrackId: reconTrack.trackId,
+      resolvedAtSec: displayTimeSec,
+      autoApprovedByRedLine: true,
+    });
+    if (droneInterceptRecommendation) setDecision(droneInterceptRecommendation.id, "approved");
+  }, [
+    displayTimeSec,
+    displayTracks,
+    droneInterceptRecommendation,
+    droneRedAutoApprovalPending,
+    manualIntercept.assetId,
+    model.assets,
+    setDecision,
+  ]);
+  useEffect(() => {
     if (!isDmzEscalation) return;
     if (manualIntercept.status === "resolved" || manualIntercept.status === "missed") return;
+    if (droneRedAutoApprovalPending) return;
     if (model.simulationTimeSec < dmzReconMissedAfterSec) return;
     setManualIntercept({ status: "missed", missedAtSec: model.simulationTimeSec });
-  }, [isDmzEscalation, manualIntercept.status, model.simulationTimeSec]);
+  }, [droneRedAutoApprovalPending, isDmzEscalation, manualIntercept.status, model.simulationTimeSec]);
   useEffect(() => {
     if (!isDmzEscalation) return;
     if (model.simulation.fighterRaidStream) return;
@@ -1984,7 +2234,12 @@ function App() {
         track?.threatClassId === "RED_FIGHTER_RAID" ||
         recommendation.threatClassId === "RED_FIGHTER_RAID" ||
         (track?.representedCount ?? 0) >= 100;
+      const isDroneRecommendation =
+        track?.threatClassId === "RED_UAV_SWARM" ||
+        recommendation.threatClassId === "RED_UAV_SWARM" ||
+        isDroneInterceptRecommendation(recommendation);
 
+      if (droneInterceptDecisionPending && isDroneRecommendation) return true;
       return (manualIntercept.status === "resolved" || manualIntercept.status === "missed") && fighterRaidNeedsCommanderDecision && isFighterRaidRecommendation;
     }
     return (
@@ -1996,7 +2251,11 @@ function App() {
       model.briefing.lossRate >= 25
     );
   });
-  const urgentPendingAdvice = urgentPendingRecommendations[0];
+  const urgentPendingAdvice = urgentPendingRecommendations.find((recommendation) => !isDroneInterceptRecommendation(recommendation));
+  const commanderDecisionRecommendation =
+    droneInterceptDecisionPending && pendingDroneInterceptRecommendation
+      ? pendingDroneInterceptRecommendation
+      : urgentPendingAdvice ?? urgentPendingRecommendations[0];
   const urgentRecommendationCount = urgentPendingRecommendations.length;
   const fighterRaidRecommendation = model.recommendations.find(
     (recommendation) =>
@@ -2041,14 +2300,23 @@ function App() {
     if (!reconTrack || !attackDroneAsset) return;
     if (reconTrack.lat > dmzOrangeResponseLat && displayTimeSec < 18) return;
     if (model.simulationTimeSec >= dmzReconMissedAfterSec) return;
+    if (manualIntercept.status === "armed" && manualIntercept.targetTrackId) return;
 
     setManualIntercept({
-      status: "resolved",
+      status: "armed",
       assetId: manualIntercept.assetId ?? attackDroneAsset.assetId,
       targetTrackId: reconTrack.trackId,
-      resolvedAtSec: displayTimeSec,
     });
-  }, [displayTimeSec, displayTracks, isDmzEscalation, manualIntercept.assetId, manualIntercept.status, model.assets, model.simulationTimeSec]);
+  }, [
+    displayTimeSec,
+    displayTracks,
+    isDmzEscalation,
+    manualIntercept.assetId,
+    manualIntercept.status,
+    manualIntercept.targetTrackId,
+    model.assets,
+    model.simulationTimeSec,
+  ]);
   const constraintViolationCount = model.recommendations.filter(
     (item) => !item.noExecute || !(item.constraintsChecked ?? []).includes("NO_REAL_COMMAND"),
   ).length;
@@ -2068,8 +2336,8 @@ function App() {
   };
   const handleSelectAsset = (assetId: string) => {
     const asset = model.assets.find((item) => item.assetId === assetId);
-    if (isAttackDroneAsset(asset) && manualIntercept.status !== "missed") {
-      setManualIntercept({ status: "armed", assetId });
+    if (isAttackDroneAsset(asset) && manualIntercept.status !== "resolved" && manualIntercept.status !== "missed") {
+      setManualIntercept({ ...manualIntercept, status: "armed", assetId });
     }
   };
   const handleSelectTrack = (trackId: string) => {
@@ -2080,7 +2348,7 @@ function App() {
         status: "resolved",
         assetId: manualIntercept.assetId,
         targetTrackId: trackId,
-        resolvedAtSec: model.simulationTimeSec,
+        resolvedAtSec: displayTimeSec,
       });
     }
   };
@@ -2107,6 +2375,16 @@ function App() {
 
     if (decision !== "approved") return;
     const recommendation = model.recommendations.find((item) => item.id === recommendationId);
+    if (recommendation && isDroneInterceptRecommendation(recommendation)) {
+      setManualIntercept({
+        status: "resolved",
+        assetId: recommendation.assetId,
+        targetTrackId: recommendation.trackId,
+        resolvedAtSec: displayTimeSec,
+      });
+      return;
+    }
+
     const isFighterRaidRecommendation =
       recommendation?.threatClassId === "RED_FIGHTER_RAID" ||
       model.tracks.some((track) => track.trackId === recommendation?.trackId && track.threatClassId === "RED_FIGHTER_RAID");
@@ -2300,10 +2578,11 @@ function App() {
         <aside className="decision-rail map-overlay map-overlay--decision" aria-label="briefing and commander decision panels">
           <BriefingPanel briefing={model.briefing} />
           <CommanderActionPanel
-            urgentRecommendation={urgentPendingAdvice}
+            urgentRecommendation={commanderDecisionRecommendation}
             recommendations={model.recommendations}
             decisions={decisions}
             alertMode={crisisAlert.mode}
+            onDecision={handleAdviceDecision}
           />
         </aside>
 

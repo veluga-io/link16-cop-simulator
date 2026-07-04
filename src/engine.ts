@@ -256,6 +256,36 @@ export function fuseTracks(messages: TacticalMessage[], flags: ScenarioFlags, co
 }
 
 function pickAsset(track: FusedTrack, assets: DefenseAsset[]) {
+  const preferredFighterCap =
+    track.threatClassId === "RED_FIGHTER_RAID"
+      ? assets.find((asset) => {
+          const assetText = `${asset.assetId} ${asset.name} ${asset.shortName} ${asset.assetClassId ?? ""}`.toUpperCase();
+          return asset.effect === "intercept" && (assetText.includes("FTR") || assetText.includes("FIGHTER") || assetText.includes("CAP"));
+        })
+      : undefined;
+  if (preferredFighterCap) {
+    return {
+      asset: preferredFighterCap,
+      score: preferredFighterCap.readiness + preferredFighterCap.ammo * 3,
+      distKm: geoDistanceKm(track, preferredFighterCap),
+    };
+  }
+
+  const preferredAttackDrone =
+    track.threatClassId === "RED_UAV_SWARM"
+      ? assets.find((asset) => {
+          const assetText = `${asset.assetId} ${asset.name} ${asset.shortName} ${asset.assetClassId ?? ""}`.toUpperCase();
+          return asset.effect === "intercept" && (assetText.includes("DRONE") || assetText.includes("ATK-DRN") || assetText.includes("ATTACK"));
+        })
+      : undefined;
+  if (preferredAttackDrone) {
+    return {
+      asset: preferredAttackDrone,
+      score: preferredAttackDrone.readiness + preferredAttackDrone.ammo * 3,
+      distKm: geoDistanceKm(track, preferredAttackDrone),
+    };
+  }
+
   const preferredSoftKill = track.threatClassId === "RED_UAV_SWARM" ? assets.find((asset) => asset.effect === "soft-kill") : undefined;
   if (preferredSoftKill) {
     return {
@@ -294,7 +324,8 @@ export function buildRecommendations(tracks: FusedTrack[], assets: DefenseAsset[
       const selected = pickAsset(track, assets);
       const lowConfidence = track.confidence < 58 || track.status === "ambiguous";
       const degradedAsset = selected.asset.readiness < 55 || selected.asset.ammo <= 1;
-      const roeStatus = lowConfidence || degradedAsset ? "hold" : track.threatScore >= 68 ? "approval-required" : "auto";
+      const droneInterceptApproval = track.threatClassId === "RED_UAV_SWARM" && selected.asset.effect === "intercept";
+      const roeStatus = droneInterceptApproval ? "approval-required" : lowConfidence || degradedAsset ? "hold" : track.threatScore >= 68 ? "approval-required" : "auto";
       const confidence = clamp(
         Math.round(track.confidence * 0.52 + selected.asset.readiness * 0.3 + track.linkQuality * 0.18 - (degradedAsset ? 18 : 0)),
         0,
@@ -308,6 +339,8 @@ export function buildRecommendations(tracks: FusedTrack[], assets: DefenseAsset[
           : "class mapping unavailable; use custody confirmation",
         roeStatus === "hold"
           ? "ROE: confidence 또는 asset readiness 기준 미달"
+          : droneInterceptApproval
+            ? "ROE: 요격 드론 출격 전 지휘관 승인 보류"
           : roeStatus === "approval-required"
             ? "ROE: 고위협 트랙은 human-on-the-loop 승인 필요"
             : "ROE: track custody/soft-kill 자동 수행 가능",
